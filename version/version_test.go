@@ -1,3 +1,6 @@
+// Copyright (c) 2026 aarondevstack
+// SPDX-License-Identifier: Apache-2.0
+
 package version
 
 import (
