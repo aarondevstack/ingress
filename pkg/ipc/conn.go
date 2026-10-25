@@ -15,6 +15,7 @@
 package ipc
 
 import (
+	"context"
 	"net"
 	"os"
 	"path"
@@ -29,12 +30,19 @@ const (
 	network = "unix"
 )
 
+func dialUnixGRPC(socketAddr string) (*grpc.ClientConn, error) {
+	return grpc.NewClient("passthrough:///unix",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, socketAddr)
+		}),
+	)
+}
+
 func GetServiceClient(tmpDir string) (IngressServiceClient, error) {
 	socketAddr := getServiceSocketAddress(tmpDir)
 
-	conn, err := grpc.NewClient("unix://"+socketAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+	conn, err := dialUnixGRPC(socketAddr)
 	if err != nil {
 		return nil, err
 	}
@@ -74,11 +82,8 @@ type IngressHandlerClientWrapper struct {
 
 func GetHandlerClient(tmpDir string) (*IngressHandlerClientWrapper, error) {
 	socketAddr := getHandlerSocketAddress(tmpDir)
-	os.Remove(socketAddr)
 
-	conn, err := grpc.NewClient("unix://"+socketAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+	conn, err := dialUnixGRPC(socketAddr)
 	if err != nil {
 		return nil, err
 	}
