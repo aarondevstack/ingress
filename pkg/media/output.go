@@ -66,6 +66,7 @@ type Output struct {
 	pipelineErr      atomic.Pointer[error]
 	latencyCaps      *gst.Caps
 	latencySampledAt time.Time
+	lastSampleTime   time.Time
 }
 
 type sample struct {
@@ -471,7 +472,7 @@ func (e *Output) writeSample(s *sample) error {
 
 	// Synchronize the outputs before the network jitter buffer to avoid old samples stuck
 	// in the channel from increasing the whole pipeline delay.
-	drop, err := e.outputSync.WaitForMediaTime(s.ts, e.isPlayingTooSlow())
+	drop, mediaTime, err := e.outputSync.WaitForMediaTime(s.ts, e.isPlayingTooSlow())
 	if err != nil {
 		return err
 	}
@@ -488,9 +489,17 @@ func (e *Output) writeSample(s *sample) error {
 		return err
 	}
 
+	if !e.lastSampleTime.IsZero() && mediaTime.Before(e.lastSampleTime) {
+		mediaTime = e.lastSampleTime
+	}
+	e.lastSampleTime = mediaTime
+
+	sample := *s.s
+	sample.Timestamp = mediaTime
+
 	// WriteSample seems to return successfully even if the Peer Connection disconnected.
 	// We need to return success to the caller even if the PC is disconnected to allow for reconnections
-	err = localTrack.WriteSample(*s.s, nil)
+	err = localTrack.WriteSample(sample, nil)
 	if err != nil {
 		return err
 	}

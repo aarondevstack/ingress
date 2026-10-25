@@ -27,6 +27,7 @@ import (
 
 const (
 	leeway                       = 100 * time.Millisecond
+	staleThreshold               = 1 * time.Second
 	waitDurationAdjustmentAmount = 10 * time.Millisecond
 )
 
@@ -77,7 +78,7 @@ func (os *OutputSynchronizer) AddTrack() *TrackOutputSynchronizer {
 	return t
 }
 
-func (os *OutputSynchronizer) getWaitDuration(pts time.Duration, firstSampleSent bool, zeroTimeAdjustment time.Duration) time.Duration {
+func (os *OutputSynchronizer) getWaitDuration(pts time.Duration, firstSampleSent bool, zeroTimeAdjustment time.Duration) (time.Duration, time.Time) {
 	os.lock.Lock()
 	defer os.lock.Unlock()
 
@@ -88,13 +89,13 @@ func (os *OutputSynchronizer) getWaitDuration(pts time.Duration, firstSampleSent
 	now := time.Now()
 	waitDuration := computeWaitDuration(pts, os.zeroTime, now)
 
-	if os.zeroTime.IsZero() || (waitDuration < -leeway && firstSampleSent) {
-		// Reset zeroTime if the earliest track is late
+	if os.zeroTime.IsZero() || (waitDuration > leeway && firstSampleSent) || (waitDuration < -leeway && waitDuration >= -staleThreshold && firstSampleSent) {
+		// Reset zeroTime if timeline jumped forward (source restart/gap) or slightly late (pipeline drift)
 		os.zeroTime = now.Add(-pts)
 		waitDuration = 0
 	}
 
-	return waitDuration
+	return waitDuration, os.zeroTime.Add(pts)
 }
 
 func newTrackOutputSynchronizer(os *OutputSynchronizer) *TrackOutputSynchronizer {
@@ -107,37 +108,37 @@ func (ost *TrackOutputSynchronizer) Close() {
 	ost.closed.Break()
 }
 
-func (ost *TrackOutputSynchronizer) getWaitDurationForMediaTime(pts time.Duration, playingTooSlow bool) (time.Duration, bool) {
+func (ost *TrackOutputSynchronizer) getWaitDurationForMediaTime(pts time.Duration, playingTooSlow bool) (time.Duration, time.Time, bool) {
 	zeroTimeAdjustment := time.Duration(0)
 
 	if playingTooSlow {
 		zeroTimeAdjustment = -waitDurationAdjustmentAmount
 	}
 
-	waitDuration := ost.os.getWaitDuration(pts, ost.firstSampleSent.Load(), zeroTimeAdjustment)
+	waitDuration, mediaTime := ost.os.getWaitDuration(pts, ost.firstSampleSent.Load(), zeroTimeAdjustment)
 
 	if waitDuration < -leeway {
-		return 0, true
+		return 0, time.Time{}, true
 	}
 
 	waitDuration = max(waitDuration, 0)
 
 	ost.firstSampleSent.Store(true)
 
-	return waitDuration, false
+	return waitDuration, mediaTime, false
 }
 
-func (ost *TrackOutputSynchronizer) WaitForMediaTime(pts time.Duration, playingTooSlow bool) (bool, error) {
-	waitDuration, drop := ost.getWaitDurationForMediaTime(pts, playingTooSlow)
+func (ost *TrackOutputSynchronizer) WaitForMediaTime(pts time.Duration, playingTooSlow bool) (bool, time.Time, error) {
+	waitDuration, mediaTime, drop := ost.getWaitDurationForMediaTime(pts, playingTooSlow)
 	if drop {
-		return drop, nil
+		return drop, time.Time{}, nil
 	}
 
 	select {
 	case <-time.After(waitDuration):
-		return false, nil
+		return false, mediaTime, nil
 	case <-ost.closed.Watch():
-		return false, errors.ErrIngressClosing
+		return false, time.Time{}, errors.ErrIngressClosing
 	}
 }
 
