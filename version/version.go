@@ -14,4 +14,5 @@
 
 package version
 
-const Version = "1.5.0"
+// Version can be set by release builds with -ldflags -X.
+var Version = "1.5.0"
