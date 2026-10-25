@@ -17,6 +17,7 @@ package media
 import (
 	"context"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -54,6 +55,8 @@ type Pipeline struct {
 	cancel atomic.Pointer[context.CancelFunc]
 
 	pipelineErr chan error
+
+	outputPads sync.Map // Native pad identity; caps changes reuse the negotiated output chain.
 
 	eos *eosDispatcher
 }
@@ -137,8 +140,15 @@ func (p *Pipeline) onParamsReady(kind types.StreamKind, gPad *gst.GhostPad) {
 		return
 	}
 
+	// Caps may change during GPU-to-system-memory fallback or resolution renegotiation.
+	// Reserve before linking, which can emit another caps notification reentrantly.
+	if _, loaded := p.outputPads.LoadOrStore(gPad.Unsafe(), struct{}{}); loaded {
+		return
+	}
+
 	defer func() {
 		if err != nil {
+			p.outputPads.Delete(gPad.Unsafe())
 			p.SetStatus(livekit.IngressState_ENDPOINT_ERROR, err)
 		} else {
 			p.SetStatus(livekit.IngressState_ENDPOINT_PUBLISHING, nil)
